@@ -2,8 +2,27 @@
 
 import { useState } from "react"
 import { jsPDF } from "jspdf"
-import { RotateCw, RotateCcw, Upload, FileUp, Trash2, Settings, Images } from "lucide-react"
+import { RotateCw, RotateCcw, Upload, FileUp, Trash2, Settings, Images, GripVertical } from "lucide-react"
 import { useDropzone } from "react-dropzone"
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  DragEndEvent,
+} from '@dnd-kit/core'
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  rectSortingStrategy,
+} from '@dnd-kit/sortable'
+import {
+  useSortable,
+} from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -25,12 +44,154 @@ type PageSize = {
   height: number
 }
 
+// Sortable Item Component for drag and drop
+interface SortableItemProps {
+  id: string
+  image: ImageFile
+  index: number
+  pageSize: string
+  pageSizes: Record<string, PageSize>
+  marginSize: number
+  onRotate: (id: string, direction: "clockwise" | "counterclockwise") => void
+  onRemove: (id: string) => void
+}
+
+function SortableItem({ 
+  id, 
+  image, 
+  index, 
+  pageSize, 
+  pageSizes, 
+  marginSize, 
+  onRotate, 
+  onRemove 
+}: SortableItemProps) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id })
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  }
+
+  const selectedPageSize = pageSizes[pageSize]
+  const aspectRatio = selectedPageSize.width / selectedPageSize.height
+  const marginFactor = marginSize / 100
+
+  return (
+    <div 
+      ref={setNodeRef} 
+      style={style} 
+      className="group"
+    >
+      <Card className="overflow-hidden transition-all duration-200 hover:shadow-xl hover:scale-[1.02] bg-slate-800 border-2 border-slate-700 hover:border-blue-500/50">
+        <div 
+          className="relative bg-slate-700 flex items-center justify-center border-b border-slate-600"
+          style={{ aspectRatio: aspectRatio }}
+        >
+          <div className="absolute top-2 left-2 z-10">
+            <Badge variant="secondary" className="text-xs px-2 py-1 bg-blue-600 text-white border-blue-700 shadow-sm">
+              {index + 1}
+            </Badge>
+          </div>
+          
+          {/* Drag Handle */}
+          <div 
+            className="absolute top-2 right-2 z-10 cursor-grab active:cursor-grabbing p-1 rounded bg-slate-800/80 hover:bg-slate-700/80 transition-colors"
+            {...attributes}
+            {...listeners}
+          >
+            <GripVertical className="h-3 w-3 text-slate-300" />
+          </div>
+          
+          {/* PDF Page Preview with Margins */}
+          <div className="w-full h-full bg-white rounded-sm shadow-inner relative overflow-hidden">
+            {/* Margin indicators */}
+            {marginSize > 0 && (
+              <div 
+                className="absolute inset-0 border-2 border-dashed border-gray-300/50"
+                style={{
+                  margin: `${marginFactor * 100}%`
+                }}
+              />
+            )}
+            
+            {/* Image positioned within margins */}
+            <div 
+              className="absolute inset-0 flex items-center justify-center"
+              style={{
+                padding: `${marginFactor * 100}%`
+              }}
+            >
+              <img
+                src={image.preview || "/placeholder.svg"}
+                alt={image.file.name}
+                className="object-contain max-h-full max-w-full transition-transform duration-200"
+                style={{ transform: `rotate(${image.rotation}deg)` }}
+              />
+            </div>
+          </div>
+        </div>
+        <div className="p-3 space-y-3 bg-slate-800">
+          <p className="text-xs truncate font-medium text-slate-300" title={image.file.name}>
+            {image.file.name}
+          </p>
+          <div className="flex gap-1 justify-center">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 hover:bg-blue-500/20 bg-slate-700 hover:text-blue-400 border border-slate-600 hover:border-blue-500/50 text-slate-300"
+              onClick={() => onRotate(image.id, "counterclockwise")}
+              title="Rotate counterclockwise"
+            >
+              <RotateCcw className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 hover:bg-blue-500/20 bg-slate-700 hover:text-blue-400 border border-slate-600 hover:border-blue-500/50 text-slate-300"
+              onClick={() => onRotate(image.id, "clockwise")}
+              title="Rotate clockwise"
+            >
+              <RotateCw className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-red-400 hover:text-red-300 hover:bg-red-500/20 bg-slate-700 border border-slate-600 hover:border-red-500/50"
+              onClick={() => onRemove(image.id)}
+              title="Remove image"
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      </Card>
+    </div>
+  )
+}
+
 export function ImageToPdfConverter() {
   const [images, setImages] = useState<ImageFile[]>([])
   const [pageSize, setPageSize] = useState<string>("letter")
   const [marginSize, setMarginSize] = useState<number>(2) // 2% margin by default
   const [converting, setConverting] = useState(false)
   const [progress, setProgress] = useState(0)
+
+  // Drag and drop sensors
+  const sensors = useSensors(
+    useSensor(PointerSensor),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  )
 
   const pageSizes: Record<string, PageSize> = {
     letter: { name: 'Letter (8.5" x 11")', width: 215.9, height: 279.4 },
@@ -63,6 +224,20 @@ export function ImageToPdfConverter() {
       setImages((prev) => [...prev, ...newImages])
     },
   })
+
+  // Handle drag end for reordering images
+  function handleDragEnd(event: DragEndEvent) {
+    const { active, over } = event
+
+    if (active.id !== over?.id) {
+      setImages((items) => {
+        const oldIndex = items.findIndex((item) => item.id === active.id)
+        const newIndex = items.findIndex((item) => item.id === over?.id)
+
+        return arrayMove(items, oldIndex, newIndex)
+      })
+    }
+  }
 
   const rotateImage = (id: string, direction: "clockwise" | "counterclockwise") => {
     setImages(
@@ -369,92 +544,46 @@ export function ImageToPdfConverter() {
                 </Badge>
               </div>
               
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8 gap-4">
-                {images.map((image, index) => {
-                  const selectedPageSize = pageSizes[pageSize]
-                  const aspectRatio = selectedPageSize.width / selectedPageSize.height
-                  const marginFactor = marginSize / 100
-                  
-                  return (
-                    <div key={image.id} className="group">
-                      <Card className="overflow-hidden transition-all duration-200 hover:shadow-xl hover:scale-[1.02] bg-slate-800 border-2 border-slate-700 hover:border-blue-500/50">
-                        <div 
-                          className="relative bg-slate-700 flex items-center justify-center border-b border-slate-600"
-                          style={{ aspectRatio: aspectRatio }}
-                        >
-                          <div className="absolute top-2 left-2 z-10">
-                            <Badge variant="secondary" className="text-xs px-2 py-1 bg-blue-600 text-white border-blue-700 shadow-sm">
-                              {index + 1}
-                            </Badge>
-                          </div>
-                          
-                          {/* PDF Page Preview with Margins */}
-                          <div className="w-full h-full bg-white rounded-sm shadow-inner relative overflow-hidden">
-                            {/* Margin indicators */}
-                            {marginSize > 0 && (
-                              <div 
-                                className="absolute inset-0 border-2 border-dashed border-gray-300/50"
-                                style={{
-                                  margin: `${marginFactor * 100}%`
-                                }}
-                              />
-                            )}
-                            
-                            {/* Image positioned within margins */}
-                            <div 
-                              className="absolute inset-0 flex items-center justify-center"
-                              style={{
-                                padding: `${marginFactor * 100}%`
-                              }}
-                            >
-                              <img
-                                src={image.preview || "/placeholder.svg"}
-                                alt={image.file.name}
-                                className="object-contain max-h-full max-w-full transition-transform duration-200"
-                                style={{ transform: `rotate(${image.rotation}deg)` }}
-                              />
-                            </div>
-                          </div>
-                        </div>
-                        <div className="p-3 space-y-3 bg-slate-800">
-                          <p className="text-xs truncate font-medium text-slate-300" title={image.file.name}>
-                            {image.file.name}
-                          </p>
-                          <div className="flex gap-1 justify-center">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8 hover:bg-blue-500/20 bg-slate-700 hover:text-blue-400 border border-slate-600 hover:border-blue-500/50 text-slate-300"
-                              onClick={() => rotateImage(image.id, "counterclockwise")}
-                              title="Rotate counterclockwise"
-                            >
-                              <RotateCcw className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8 hover:bg-blue-500/20 bg-slate-700 hover:text-blue-400 border border-slate-600 hover:border-blue-500/50 text-slate-300"
-                              onClick={() => rotateImage(image.id, "clockwise")}
-                              title="Rotate clockwise"
-                            >
-                              <RotateCw className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8 text-red-400 hover:text-red-300 hover:bg-red-500/20 bg-slate-700 border border-slate-600 hover:border-red-500/50"
-                              onClick={() => removeImage(image.id)}
-                              title="Remove image"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </div>
-                        </div>
-                      </Card>
-                    </div>
-                  )
-                })}
+              {/* Drag and drop instructions */}
+              <div className="flex items-center gap-2 px-3 py-2 bg-blue-950/30 border border-blue-600/30 rounded-lg">
+                <GripVertical className="h-4 w-4 text-blue-400" />
+                <p className="text-xs text-blue-300">
+                  Drag the grip handle on any image to reorder pages
+                </p>
               </div>
+              
+              <DndContext 
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                onDragEnd={handleDragEnd}
+              >
+                <SortableContext 
+                  items={images.map(img => img.id)}
+                  strategy={rectSortingStrategy}
+                >
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8 gap-4">
+                    {images.map((image, index) => {
+                      const selectedPageSize = pageSizes[pageSize]
+                      const aspectRatio = selectedPageSize.width / selectedPageSize.height
+                      const marginFactor = marginSize / 100
+                      
+                      return (
+                        <SortableItem
+                          key={image.id}
+                          id={image.id}
+                          image={image}
+                          index={index}
+                          pageSize={pageSize}
+                          pageSizes={pageSizes}
+                          marginSize={marginSize}
+                          onRotate={(id, direction) => rotateImage(id, direction)}
+                          onRemove={(id) => removeImage(id)}
+                        />
+                      )
+                    })}
+                  </div>
+                </SortableContext>
+              </DndContext>
             </div>
           )}
         </div>
